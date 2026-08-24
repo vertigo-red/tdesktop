@@ -1,0 +1,104 @@
+name: RPM build (Fedora 44)
+
+# Builds telegram-desktop src.rpm -> binary rpms inside a Fedora 44
+# container, entirely from the spec in rpm/. Sources are fetched and
+# checksum-verified:
+#   Source0 (tdesktop full tarball) -- upstream GitHub release;
+#   Source2 (vendored tg_owt w/ submodules) -- release asset of this fork,
+#   repacked per the recipe in the spec comment.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: telegram-desktop version (must match rpm/telegram-desktop.spec)
+        required: false
+        default: '7.1.1'
+      dist:
+        description: dist tag
+        required: false
+        default: '.fc44'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: SRPM + RPM (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    container:
+      image: fedora:44
+    env:
+      SPEC_PATH: ${{ github.workspace }}/rpm/telegram-desktop.spec
+      TDESKTOP_SHA256: c70e99f86bd1d8be2d15a7655f6cf37db1fc040eed06dcae6a066519a3aad0b7
+      TG_OWT_VER: git20260725
+      TG_OWT_SHA256: 15ef4feb927493e842e04039617097a8cf1decf940e5fe46dd1fdfae4971d071
+    steps:
+      - name: Install build tooling
+        run: |
+          set -euxo pipefail
+          dnf -y install dnf5-plugins rpm-build rpmdevtools git-core curl
+
+      - name: Check out packaging files
+        uses: actions/checkout@v4
+
+      - name: Install BuildRequires from the spec
+        run: |
+          set -euxo pipefail
+          dnf -y builddep "$SPEC_PATH"
+          # H.264 devel: prefer the real codec headers, fall back to the
+          # Fedora stub (same SONAME, satisfies pkgconfig(openh264)).
+          dnf -y install openh264-devel 2>/dev/null || dnf -y install noopenh264-devel
+
+      - name: Fetch and verify Source0 (tdesktop)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          mkdir sources && cd sources
+          spectool -g ../rpm/telegram-desktop.spec
+          echo "${TDESKTOP_SHA256}  tdesktop-${{ inputs.version }}-full.tar.gz" | sha256sum -c -
+
+      - name: Fetch and verify Source2 (tg_owt)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euxo pipefail
+          curl -fsSLo "sources/tg_owt-${TG_OWT_VER}.tar.xz" \
+            "https://github.com/${{ github.repository }}/releases/download/rpm-sources/tg_owt-${TG_OWT_VER}.tar.xz"
+          echo "${TG_OWT_SHA256}  sources/tg_owt-${TG_OWT_VER}.tar.xz" | sha256sum -c -
+
+      - name: Build SRPM
+        run: |
+          set -euxo pipefail
+          rpmdev-setuptree
+          cp sources/* ~/rpmbuild/SOURCES/
+          cp "$SPEC_PATH" ~/rpmbuild/SPECS/
+          rpmbuild -bs --define "dist ${{ inputs.dist }}" ~/rpmbuild/SPECS/telegram-desktop.spec
+          ls -lh ~/rpmbuild/SRPMS/
+
+      - name: Install SRPM deps and rebuild binary RPMs
+        run: |
+          set -euxo pipefail
+          dnf -y builddep ~/rpmbuild/SRPMS/*.src.rpm
+          rpmbuild --rebuild --define "dist ${{ inputs.dist }}" ~/rpmbuild/SRPMS/*.src.rpm
+
+      - name: Stage artifacts
+        run: |
+          set -euxo pipefail
+          mkdir -p artifacts/srpm artifacts/rpms
+          cp -a ~/rpmbuild/SRPMS/*.rpm artifacts/srpm/
+          find ~/rpmbuild/RPMS -name '*.rpm' -exec cp -a {} artifacts/rpms/ \;
+          cd artifacts && sha256sum srpm/*.rpm rpms/*.rpm | tee SHA256SUMS
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-desktop-${{ inputs.version }}${{ inputs.dist }}
+          path: |
+            artifacts/srpm/*.rpm
+            artifacts/rpms/*.rpm
+            artifacts/SHA256SUMS
+          if-no-files-found: error
