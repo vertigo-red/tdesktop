@@ -1,6 +1,8 @@
-%ifarch aarch64
-    %global _lto_cflags %nil
-%endif
+# LTO disabled on ALL arches: the final binary link (lto1) peaks beyond the
+# 16 GB that GitHub-hosted runners provide (OOM-killed during the 7.1.1-1
+# build). Upstream ships LTO off by default (DESKTOP_APP_ENABLE_LTO is not
+# set here), so this only drops Fedora's default -flto optflags injection.
+%global _lto_cflags %nil
 
 %global appname tdesktop
 
@@ -276,6 +278,10 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/*.desktop
 %{_metainfodir}/*.metainfo.xml
 
 %changelog
+* Tue Aug 25 2026 Vertigo.Red <vertigo.red@example.com> - 7.1.1-1
+- Disable LTO on all arches: lto1 OOMs on 16 GB GitHub-hosted runners during
+  the final link; upstream default is LTO-off anyway (DESKTOP_APP_ENABLE_LTO
+  is not enabled by this spec).
 * Tue Aug 25 2026 Vertigo.Red <vertigo.red@example.com> - 7.1.1-1
 - Update to 7.1.1.
 - DROP findprotobuf_fix.patch: upstream rewrote cmake/external/cld3 -- the
